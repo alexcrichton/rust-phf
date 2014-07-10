@@ -9,18 +9,18 @@ mod map {
     use phf::PhfMap;
 
     #[allow(dead_code)]
-    static TRAILING_COMMA: PhfMap<int> = phf_map!(
+    static TRAILING_COMMA: PhfMap<&'static str, int> = phf_map!(
         "foo" => 10,
     );
 
     #[allow(dead_code)]
-    static NO_TRAILING_COMMA: PhfMap<int> = phf_map!(
+    static NO_TRAILING_COMMA: PhfMap<&'static str, int> = phf_map!(
         "foo" => 10
     );
 
     #[test]
     fn test_two() {
-        static map: PhfMap<int> = phf_map!(
+        static map: PhfMap<&'static str, int> = phf_map!(
             "foo" => 10,
             "bar" => 11,
         );
@@ -32,12 +32,12 @@ mod map {
 
     #[test]
     fn test_entries() {
-        static map: PhfMap<int> = phf_map!(
+        static map: PhfMap<&'static str, int> = phf_map!(
             "foo" => 10,
             "bar" => 11,
         );
         let mut hash = HashMap::new();
-        for (key, &value) in map.entries() {
+        for (&key, &value) in map.entries() {
             hash.insert(key, value);
         }
         assert!(Some(&10) == hash.find(&("foo")));
@@ -47,12 +47,12 @@ mod map {
 
     #[test]
     fn test_keys() {
-        static map: PhfMap<int> = phf_map!(
+        static map: PhfMap<&'static str, int> = phf_map!(
             "foo" => 10,
             "bar" => 11,
         );
         let mut hash = HashSet::new();
-        for key in map.keys() {
+        for &key in map.keys() {
             hash.insert(key);
         }
         assert!(hash.contains(&("foo")));
@@ -62,7 +62,7 @@ mod map {
 
     #[test]
     fn test_values() {
-        static map: PhfMap<int> = phf_map!(
+        static map: PhfMap<&'static str, int> = phf_map!(
             "foo" => 10,
             "bar" => 11,
         );
@@ -77,7 +77,7 @@ mod map {
 
     #[test]
     fn test_large() {
-        static map: PhfMap<int> = phf_map!(
+        static map: PhfMap<&'static str, int> = phf_map!(
             "a" => 0,
             "b" => 1,
             "c" => 2,
@@ -110,10 +110,18 @@ mod map {
 
     #[test]
     fn test_macro_key() {
-        static map: PhfMap<int> = phf_map!(
+        static map: PhfMap<&'static str, int> = phf_map! {
             concat!("foo", "bar") => 1
-        );
-        assert!(Some(&1) == map.find(&("foobar")));
+        };
+        assert!(Some(&1) == map.find(&"foobar"));
+    }
+
+    #[test]
+    fn test_dynamic_key() {
+        static map: PhfMap<&'static str, int> = phf_map! {
+            "a" => 0,
+        };
+        assert_eq!(Some(&0), map.find_equiv(&"a".to_string().as_slice()))
     }
 }
 
@@ -122,18 +130,18 @@ mod set {
     use phf::PhfSet;
 
     #[allow(dead_code)]
-    static TRAILING_COMMA: PhfSet = phf_set! {
+    static TRAILING_COMMA: PhfSet<&'static str> = phf_set! {
         "foo",
     };
 
     #[allow(dead_code)]
-    static NO_TRAILING_COMMA: PhfSet = phf_set! {
+    static NO_TRAILING_COMMA: PhfSet<&'static str> = phf_set! {
         "foo"
     };
 
     #[test]
     fn test_two() {
-        static SET: PhfSet = phf_set! {
+        static SET: PhfSet<&'static str> = phf_set! {
             "hello",
             "world",
         };
@@ -145,11 +153,11 @@ mod set {
 
     #[test]
     fn test_iter() {
-        static SET: PhfSet = phf_set! {
+        static SET: PhfSet<&'static str> = phf_set! {
             "hello",
             "world",
         };
-        let set = SET.iter().collect::<HashSet<_>>();
+        let set = SET.iter().map(|&e| e).collect::<HashSet<_>>();
         assert!(set.contains(&"hello"));
         assert!(set.contains(&"world"));
         assert_eq!(2, set.len());

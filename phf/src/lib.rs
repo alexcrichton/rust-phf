@@ -6,6 +6,7 @@
 #![warn(missing_doc)]
 
 use std::fmt;
+use std::hash::Hash;
 use std::hash::Hasher;
 use std::hash::sip::SipHasher;
 use std::slice;
@@ -23,7 +24,7 @@ use std::collections::Collection;
 ///
 /// use phf::PhfMap;
 ///
-/// static MY_MAP: PhfMap<int> = phf_map! {
+/// static MY_MAP: PhfMap<&'static str, int> = phf_map! {
 ///    "hello" => 10,
 ///    "world" => 11,
 /// };
@@ -36,7 +37,7 @@ use std::collections::Collection;
 /// The fields of this struct are public so that they may be initialized by the
 /// `phf_map` macro. They are subject to change at any time and should never
 /// be accessed directly.
-pub struct PhfMap<T> {
+pub struct PhfMap<K, V> {
     #[doc(hidden)]
     pub k1: u64,
     #[doc(hidden)]
@@ -44,7 +45,7 @@ pub struct PhfMap<T> {
     #[doc(hidden)]
     pub disps: &'static [(uint, uint)],
     #[doc(hidden)]
-    pub entries: &'static [(&'static str, T)],
+    pub entries: &'static [(K, V)],
 }
 
 static LOG_MAX_SIZE: uint = 21;
@@ -54,8 +55,8 @@ pub static MAX_SIZE: uint = 1 << LOG_MAX_SIZE;
 
 #[doc(hidden)]
 #[inline]
-pub fn hash(s: &str, k1: u64, k2: u64) -> (uint, uint, uint) {
-    let hash = SipHasher::new_with_keys(k1, k2).hash(&s);
+pub fn hash<K: Hash>(s: &K, k1: u64, k2: u64) -> (uint, uint, uint) {
+    let hash = SipHasher::new_with_keys(k1, k2).hash(s);
     let mask = (MAX_SIZE - 1) as u64;
 
     ((hash & mask) as uint,
@@ -69,19 +70,19 @@ pub fn displace(f1: uint, f2: uint, d1: uint, d2: uint) -> uint {
     d2 + f1 * d1 + f2
 }
 
-impl<T> Collection for PhfMap<T> {
+impl<K, V> Collection for PhfMap<K, V> {
     fn len(&self) -> uint {
         self.entries.len()
     }
 }
 
-impl<'a, T> Map<&'a str, T> for PhfMap<T> {
-    fn find<'a>(&'a self, key: & &str) -> Option<&'a T> {
-        self.find_entry(key).map(|&(_, ref v)| v)
+impl<K: Hash+Eq, V> Map<K, V> for PhfMap<K, V> {
+    fn find<'a>(&'a self, key: &K) -> Option<&'a V> {
+        self.get_value(key, |k| key == k)
     }
 }
 
-impl<T: fmt::Show> fmt::Show for PhfMap<T> {
+impl<K: fmt::Show, V: fmt::Show> fmt::Show for PhfMap<K, V> {
     fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
         try!(write!(fmt, "{{"));
         let mut first = true;
@@ -96,57 +97,79 @@ impl<T: fmt::Show> fmt::Show for PhfMap<T> {
     }
 }
 
-impl<T> PhfMap<T> {
-    fn find_entry(&self, key: & &str) -> Option<&'static (&'static str, T)> {
-        let (g, f1, f2) = hash(*key, self.k1, self.k2);
+impl<K: Hash+Eq, V> PhfMap<K, V> {
+    /// Returns a reference to the map's internal static instance of the given
+    /// key.
+    ///
+    /// This can be useful for interning schemes.
+    pub fn find_key(&self, key: &K) -> Option<&'static K> {
+        self.get_key(key, |k| key == k)
+    }
+}
+
+impl<K, V> PhfMap<K, V> {
+    fn get_entry<T: Hash>(&self, key: &T, check: |&K| -> bool)
+                          -> Option<&'static (K, V)> {
+        let (g, f1, f2) = hash(key, self.k1, self.k2);
         let (d1, d2) = self.disps[g % self.disps.len()];
-        let entry @ &(s, _) = &self.entries[displace(f1, f2, d1, d2) %
-                                            self.entries.len()];
-        if s == *key {
+        let entry @ &(ref s, _) = &self.entries[displace(f1, f2, d1, d2) %
+                                                self.entries.len()];
+        if check(s) {
             Some(entry)
         } else {
             None
         }
     }
 
-    /// Returns a reference to the map's internal static instance of the given
-    /// key.
-    ///
-    /// This can be useful for interning schemes.
-    pub fn find_key(&self, key: & &str) -> Option<&'static str> {
-        self.find_entry(key).map(|&(s, _)| s)
+    fn get_key<T: Hash>(&self, key: &T, check: |&K| -> bool)
+                        -> Option<&'static K> {
+        self.get_entry(key, check).map(|&(ref k, _)| k)
+    }
+
+    fn get_value<T: Hash>(&self, key: &T, check: |&K| -> bool)
+                          -> Option<&'static V> {
+        self.get_entry(key, check).map(|&(_, ref v)| v)
+    }
+
+    pub fn find_equiv<T: Hash+Equiv<K>>(&self, key: &T) -> Option<&'static V> {
+        self.get_value(key, |k| key.equiv(k))
+    }
+
+    pub fn find_key_equiv<T: Hash+Equiv<K>>(&self, key: &T)
+                                            -> Option<&'static K> {
+        self.get_key(key, |k| key.equiv(k))
     }
 
     /// Returns an iterator over the key/value pairs in the map.
     ///
     /// Entries are retuned in an arbitrary but fixed order.
-    pub fn entries<'a>(&'a self) -> PhfMapEntries<'a, T> {
+    pub fn entries(&self) -> PhfMapEntries<K, V> {
         PhfMapEntries { iter: self.entries.iter() }
     }
 
     /// Returns an iterator over the keys in the map.
     ///
     /// Keys are returned in an arbitrary but fixed order.
-    pub fn keys<'a>(&'a self) -> PhfMapKeys<'a, T> {
+    pub fn keys(&self) -> PhfMapKeys<K, V> {
         PhfMapKeys { iter: self.entries() }
     }
 
     /// Returns an iterator over the values in the map.
     ///
     /// Values are returned in an arbitrary but fixed order.
-    pub fn values<'a>(&'a self) -> PhfMapValues<'a, T> {
+    pub fn values(&self) -> PhfMapValues<K, V> {
         PhfMapValues { iter: self.entries() }
     }
 }
 
 /// An iterator over the key/value pairs in a `PhfMap`.
-pub struct PhfMapEntries<'a, T> {
-    iter: slice::Items<'a, (&'static str, T)>,
+pub struct PhfMapEntries<K, V> {
+    iter: slice::Items<'static, (K, V)>,
 }
 
-impl<'a, T> Iterator<(&'static str, &'a T)> for PhfMapEntries<'a, T> {
-    fn next(&mut self) -> Option<(&'static str, &'a T)> {
-        self.iter.next().map(|&(key, ref value)| (key, value))
+impl<K, V> Iterator<(&'static K, &'static V)> for PhfMapEntries<K, V> {
+    fn next(&mut self) -> Option<(&'static K, &'static V)> {
+        self.iter.next().map(|&(ref k, ref v)| (k, v))
     }
 
     fn size_hint(&self) -> (uint, Option<uint>) {
@@ -155,12 +178,12 @@ impl<'a, T> Iterator<(&'static str, &'a T)> for PhfMapEntries<'a, T> {
 }
 
 /// An iterator over the keys in a `PhfMap`.
-pub struct PhfMapKeys<'a, T> {
-    iter: PhfMapEntries<'a, T>,
+pub struct PhfMapKeys<K, V> {
+    iter: PhfMapEntries<K, V>,
 }
 
-impl<'a, T> Iterator<&'static str> for PhfMapKeys<'a, T> {
-    fn next(&mut self) -> Option<&'static str> {
+impl<K, V> Iterator<&'static K> for PhfMapKeys<K, V> {
+    fn next(&mut self) -> Option<&'static K> {
         self.iter.next().map(|(key, _)| key)
     }
 
@@ -170,12 +193,12 @@ impl<'a, T> Iterator<&'static str> for PhfMapKeys<'a, T> {
 }
 
 /// An iterator over the values in a `PhfMap`.
-pub struct PhfMapValues<'a, T> {
-    iter: PhfMapEntries<'a, T>,
+pub struct PhfMapValues<K, V> {
+    iter: PhfMapEntries<K, V>,
 }
 
-impl<'a, T> Iterator<&'a T> for PhfMapValues<'a, T> {
-    fn next(&mut self) -> Option<&'a T> {
+impl<K, V> Iterator<&'static V> for PhfMapValues<K, V> {
+    fn next(&mut self) -> Option<&'static V> {
         self.iter.next().map(|(_, value)| value)
     }
 
@@ -196,7 +219,7 @@ impl<'a, T> Iterator<&'a T> for PhfMapValues<'a, T> {
 ///
 /// use phf::PhfSet;
 ///
-/// static MY_SET: PhfSet = phf_set! {
+/// static MY_SET: PhfSet<&'static str> = phf_set! {
 ///    "hello",
 ///    "world",
 /// };
@@ -209,12 +232,12 @@ impl<'a, T> Iterator<&'a T> for PhfMapValues<'a, T> {
 /// The fields of this struct are public so that they may be initialized by the
 /// `phf_set` macro. They are subject to change at any time and should never be
 /// accessed directly.
-pub struct PhfSet {
+pub struct PhfSet<T> {
     #[doc(hidden)]
-    pub map: PhfMap<()>
+    pub map: PhfMap<T, ()>
 }
 
-impl fmt::Show for PhfSet {
+impl<T: fmt::Show> fmt::Show for PhfSet<T> {
     fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
         try!(write!(fmt, "{{"));
         let mut first = true;
@@ -229,57 +252,59 @@ impl fmt::Show for PhfSet {
     }
 }
 
-impl Collection for PhfSet {
+impl<T> Collection for PhfSet<T> {
     #[inline]
     fn len(&self) -> uint {
         self.map.len()
     }
 }
 
-impl<'a> Set<&'a str> for PhfSet {
+impl<T: Hash+Eq> Set<T> for PhfSet<T> {
     #[inline]
-    fn contains(&self, value: & &'a str) -> bool {
+    fn contains(&self, value: &T) -> bool {
         self.map.contains_key(value)
     }
 
     #[inline]
-    fn is_disjoint(&self, other: &PhfSet) -> bool {
-        !self.iter().any(|value| other.contains(&value))
+    fn is_disjoint(&self, other: &PhfSet<T>) -> bool {
+        !self.iter().any(|value| other.contains(value))
     }
 
     #[inline]
-    fn is_subset(&self, other: &PhfSet) -> bool {
-        self.iter().all(|value| other.contains(&value))
+    fn is_subset(&self, other: &PhfSet<T>) -> bool {
+        self.iter().all(|value| other.contains(value))
     }
 }
 
-impl PhfSet {
+impl<T: Hash+Eq> PhfSet<T> {
     /// Returns a reference to the set's internal static instance of the given
     /// key.
     ///
     /// This can be useful for interning schemes.
     #[inline]
-    pub fn find_key(&self, key: & &str) -> Option<&'static str> {
+    pub fn find_key(&self, key: &T) -> Option<&'static T> {
         self.map.find_key(key)
     }
+}
 
+impl<T> PhfSet<T> {
     /// Returns an iterator over the values in the set.
     ///
     /// Values are returned in an arbitrary but fixed order.
     #[inline]
-    pub fn iter<'a>(&'a self) -> PhfSetValues<'a> {
+    pub fn iter(&self) -> PhfSetValues<T> {
         PhfSetValues { iter: self.map.keys() }
     }
 }
 
 /// An iterator over the values in a `PhfSet`.
-pub struct PhfSetValues<'a> {
-    iter: PhfMapKeys<'a, ()>,
+pub struct PhfSetValues<T> {
+    iter: PhfMapKeys<T, ()>,
 }
 
-impl<'a> Iterator<&'static str> for PhfSetValues<'a> {
+impl<T> Iterator<&'static T> for PhfSetValues<T> {
     #[inline]
-    fn next(&mut self) -> Option<&'static str> {
+    fn next(&mut self) -> Option<&'static T> {
         self.iter.next()
     }
 
@@ -359,7 +384,7 @@ impl<'a, T> Map<&'a str, T> for PhfOrderedMap<T> {
 
 impl<T> PhfOrderedMap<T> {
     fn find_entry(&self, key: & &str) -> Option<&'static (&'static str, T)> {
-        let (g, f1, f2) = hash(*key, self.k1, self.k2);
+        let (g, f1, f2) = hash(key, self.k1, self.k2);
         let (d1, d2) = self.disps[g % self.disps.len()];
         let idx = self.idxs[displace(f1, f2, d1, d2) % self.idxs.len()];
         let entry @ &(s, _) = &self.entries[idx];
